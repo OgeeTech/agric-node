@@ -2,69 +2,178 @@ const User = require("../models/User");
 const Listing = require("../models/Listing");
 const { parseUssdText } = require("../utils/ussdHelper");
 
+const AREA_COUNCILS = {
+  1: "Bwari",
+  2: "Gwagwalada",
+  3: "Kuje",
+  4: "Kwali",
+  5: "Abaji",
+  6: "AMAC",
+};
+
+const CROPS = {
+  1: "Maize",
+  2: "Tomatoes",
+  3: "Rice",
+  4: "Yam",
+  5: "Cassava",
+};
+
 const handleUssd = async (req, res) => {
   try {
-    // Africa's Talking sends data as application/x-www-form-urlencoded
-    const { sessionId, serviceCode, phoneNumber, text } = req.body;
+    const { phoneNumber, text } = req.body;
     const { step, inputs } = parseUssdText(text);
-
     let response = "";
 
-    // 1. Silent Onboarding: Create the farmer if they don't exist
     let user = await User.findOne({ phoneNumber });
-    if (!user) {
-      user = await User.create({
-        phoneNumber,
-        role: "farmer",
-        location: "Bwari, FCT", // Hardcoded for the MVP scope
-      });
+
+    if (!user || !user.isRegistered) {
+      if (step === 0) {
+        response = `CON Welcome to AgriNode FCT.
+You must register before listing crops.
+1. Register as a Farmer`;
+      } else if (step === 1 && inputs[0] === "1") {
+        response = `CON Enter your Full Name:`;
+      } else if (step === 2 && inputs[0] === "1") {
+        response = `CON Select your FCT Area Council:
+1. Bwari
+2. Gwagwalada
+3. Kuje
+4. Kwali
+5. Abaji
+6. AMAC`;
+      } else if (step === 3 && inputs[0] === "1") {
+        if (!AREA_COUNCILS[inputs[2]]) {
+          response = `END Invalid Area Council selected. Please dial again.`;
+        } else {
+          response = `CON Enter your 11-digit NIN (National ID Number):`;
+        }
+      } else if (step === 4 && inputs[0] === "1") {
+        const fullName = inputs[1].trim();
+        const areaCouncil = AREA_COUNCILS[inputs[2]];
+        const nin = inputs[3].trim();
+
+        // Validate 11-digit NIN
+        if (!/^\d{11}$/.test(nin)) {
+          response = `END Registration Failed: NIN must be an exact 11-digit number.`;
+        } else {
+          // Check if NIN is already used by another phone number
+          const existingNin = await User.findOne({
+            nin,
+            phoneNumber: { $ne: phoneNumber },
+          });
+          if (existingNin) {
+            response = `END Registration Failed: This NIN is already linked to another farmer.`;
+          } else {
+            user = await User.findOneAndUpdate(
+              { phoneNumber },
+              {
+                phoneNumber,
+                name: fullName,
+                areaCouncil,
+                nin,
+                role: "farmer",
+                isRegistered: true,
+              },
+              { upsert: true, new: true },
+            );
+
+            response = `END Registration Complete!
+Welcome ${user.name} (${user.areaCouncil}).
+NIN Verified: ${nin.slice(0, 3)}*****${nin.slice(-3)}.
+Dial *384*100# again to list crops.`;
+          }
+        }
+      } else {
+        response = `END Invalid selection. Please dial *384*100# to register.`;
+      }
+
+      res.set("Content-Type", "text/plain");
+      return res.send(response);
     }
 
-    // 2. USSD State Machine
     if (step === 0) {
-      // Empty text string means it is the initial dial
-      response = `CON Welcome to AgriNode Marketplace
-      1. List a Crop for Sale
-      2. Check Escrow Balance`;
-    } else if (step === 1 && inputs[0] === "1") {
-      response = `CON Select Crop Type:
-      1. Maize
-      2. Tomatoes
-      3. Rice`;
-    } else if (step === 1 && inputs[0] === "2") {
-      response = `END Your current escrow balance is NGN ${user.walletBalance}.`;
+      response = `CON Welcome, ${user.name} (${user.areaCouncil})
+1. List Crop for Sale
+2. Check Escrow & Wallet Balance
+3. My Active Listings`;
+    }
+    // Option 1: List a Crop
+    else if (step === 1 && inputs[0] === "1") {
+      response = `CON Select Crop to Sell:
+1. Maize
+2. Tomatoes
+3. Rice
+4. Yam
+5. Cassava`;
     } else if (step === 2 && inputs[0] === "1") {
-      response = `CON Enter quantity (in kg):`;
+      if (!CROPS[inputs[1]]) {
+        response = `END Invalid crop selection. Please try again.`;
+      } else {
+        response = `CON Enter quantity of ${CROPS[inputs[1]]} (in kg):`;
+      }
     } else if (step === 3 && inputs[0] === "1") {
-      response = `CON Enter the total price (in NGN) for the full quantity:`;
+      const qty = Number(inputs[2]);
+      if (isNaN(qty) || qty <= 0) {
+        response = `END Invalid quantity entered.`;
+      } else {
+        response = `CON Enter total price in NGN for ${qty}kg of ${CROPS[inputs[1]]}:`;
+      }
     } else if (step === 4 && inputs[0] === "1") {
-      // Data extraction from the array: ['1', '1', '50', '20000']
-      const cropMap = { 1: "Maize", 2: "Tomatoes", 3: "Rice" };
-      const cropType = cropMap[inputs[1]] || "Unknown";
+      const cropType = CROPS[inputs[1]];
       const quantity = Number(inputs[2]);
       const price = Number(inputs[3]);
 
-      // Save the listing to MongoDB
-      await Listing.create({
-        farmerId: user._id,
-        cropType,
-        quantity,
-        price,
-        location: user.location,
-      });
+      if (isNaN(price) || price <= 0) {
+        response = `END Invalid price entered.`;
+      } else {
+        await Listing.create({
+          farmerId: user._id,
+          cropType,
+          quantity,
+          price,
+          areaCouncil: user.areaCouncil,
+        });
 
-      response = `END Success! Your ${quantity}kg of ${cropType} is listed for NGN ${price}. Buyers will contact you soon.`;
+        response = `END Listed Successfully!
+${quantity}kg of ${cropType} from ${user.areaCouncil} is live for NGN ${price.toLocaleString()}.`;
+      }
+    }
+    // Option 2: Check Wallet & Escrow Balances
+    else if (step === 1 && inputs[0] === "2") {
+      response = `END Account Summary (${user.name}):
+Available Wallet: NGN ${user.walletBalance.toLocaleString()}
+Locked in Escrow: NGN ${user.escrowBalance.toLocaleString()}
+Area Council: ${user.areaCouncil}`;
+    }
+    // Option 3: Check Active Listings
+    else if (step === 1 && inputs[0] === "3") {
+      const activeListings = await Listing.find({
+        farmerId: user._id,
+        status: { $in: ["available", "pending_escrow"] },
+      }).limit(3);
+
+      if (activeListings.length === 0) {
+        response = `END You have no active crop listings.`;
+      } else {
+        const listText = activeListings
+          .map(
+            (l, idx) =>
+              `${idx + 1}. ${l.quantity}kg ${l.cropType} - NGN ${l.price} (${l.status})`,
+          )
+          .join("\n");
+        response = `END Your Active Crops:\n${listText}`;
+      }
     } else {
-      response = "END Invalid input. Please try again.";
+      response = `END Invalid input. Please try again.`;
     }
 
-    // Africa's Talking strictly requires the Content-Type to be text/plain
     res.set("Content-Type", "text/plain");
-    res.send(response);
+    return res.send(response);
   } catch (error) {
     console.error(`[USSD Error]: ${error.message}`);
     res.set("Content-Type", "text/plain");
-    res.send("END A system error occurred. Please try again later.");
+    return res.send("END A system error occurred. Please try again.");
   }
 };
 

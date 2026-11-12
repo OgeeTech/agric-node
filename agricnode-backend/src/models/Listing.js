@@ -9,14 +9,14 @@ const listingSchema = new mongoose.Schema(
       index: true,
     },
     cropType: { type: String, required: true },
-    quantity: { type: Number, required: true }, // Assumed unit: kg or bags
-    price: { type: Number, required: true }, // Total price or price per unit
+    quantity: { type: Number, required: true },
+    price: { type: Number, required: true },
     status: {
       type: String,
       enum: ["available", "pending_escrow", "sold"],
       default: "available",
     },
-    location: { type: String, required: true }, // Denormalized for faster marketplace querying
+    areaCouncil: { type: String, required: true },
   },
   { timestamps: true },
 );
