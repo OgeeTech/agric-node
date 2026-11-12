@@ -22,7 +22,7 @@ app.get("/health", (req, res) => {
 });
 
 // Route Mounting (To be un-commented as we build them)
-// app.use('/api/ussd', require('./routes/ussdRoutes'));
+app.use("/api/ussd", require("./routes/ussdRoutes"));
 // app.use('/api/listings', require('./routes/listingRoutes'));
 // app.use('/api/orders', require('./routes/orderRoutes'));
 
