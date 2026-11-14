@@ -20,6 +20,10 @@ const startServer = async () => {
     server.close(() => {
       console.log("[Server] Closed out remaining connections.");
       process.exit(0);
+      console.log(
+        "Key prefix:",
+        process.env.PAYSTACK_SECRET_KEY?.substring(0, 8),
+      );
     });
 
     // Force close if connections hang for more than 10 seconds
