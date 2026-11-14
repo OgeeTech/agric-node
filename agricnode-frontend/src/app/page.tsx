@@ -1,18 +1,18 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   Phone,
-  ShieldCheck,
-  Truck,
-  RefreshCw,
   Sprout,
-  CheckCircle2,
+  ArrowRight,
+  Smartphone,
+  UserCheck,
   Lock,
-  BadgeCheck,
+  Wallet,
   MapPin,
-  CreditCard,
-  X,
+  LayoutGrid,
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -23,591 +23,455 @@ interface Listing {
   quantity: number;
   price: number;
   areaCouncil: string;
-  status: string;
-  farmerId?: {
-    name: string;
-    phoneNumber: string;
-    areaCouncil: string;
-    nin: string;
-    isRegistered: boolean;
-  };
-  createdAt: string;
 }
 
-interface Order {
-  _id: string;
-  amountPaid: number;
-  paymentReference: string;
-  buyerEmail: string;
-  paymentStatus: "pending_payment" | "held_in_escrow" | "released" | "refunded";
-  deliveryStatus:
-    | "awaiting_payment"
-    | "pending_dispatch"
-    | "in_transit"
-    | "delivered";
-  listingId?: {
-    cropType: string;
-    quantity: number;
-    areaCouncil: string;
-    farmerId?: {
-      name: string;
-      phoneNumber: string;
-      walletBalance: number;
-      escrowBalance: number;
-    };
-  };
-  buyerId?: {
-    name: string;
-  };
-  createdAt: string;
-}
-
-export default function AgriNodeDashboard() {
+export default function Home() {
+  const pathname = usePathname();
   const [listings, setListings] = useState<Listing[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [paymentBanner, setPaymentBanner] = useState<string | null>(null);
+  const [showFloatingUssd, setShowFloatingUssd] = useState(false);
 
-  // Checkout Modal State
-  const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
-  const [buyerName, setBuyerName] = useState("Abuja Agro Wholesalers");
-  const [buyerEmail, setBuyerEmail] = useState("procurement@abujaagro.ng");
-  const [buyerPhone, setBuyerPhone] = useState("+2348099999999");
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
-
-  // USSD Simulator State
   const [farmerPhone, setFarmerPhone] = useState("+2348011223344");
   const [ussdSessionActive, setUssdSessionActive] = useState(false);
   const [ussdHistory, setUssdHistory] = useState<string[]>([]);
   const [ussdInput, setUssdInput] = useState("");
   const [ussdScreenText, setUssdScreenText] = useState(
-    "Dial *384*100# to Register (Name, Area Council, NIN) or List Crops.",
+    "Dial *384*100# to Register Farmer or List Harvest.",
   );
   const [ussdLoading, setUssdLoading] = useState(false);
 
-  const fetchMarketData = useCallback(async () => {
-    setLoading(true);
+  const fetchListings = useCallback(async () => {
     try {
-      const [listingsRes, ordersRes] = await Promise.all([
-        fetch(`${API_BASE}/listings`),
-        fetch(`${API_BASE}/orders`),
-      ]);
-      const listingsJson = await listingsRes.json();
-      const ordersJson = await ordersRes.json();
-      if (listingsJson.data) setListings(listingsJson.data);
-      if (ordersJson.data) setOrders(ordersJson.data);
+      const res = await fetch(`${API_BASE}/listings`);
+      const json = await res.json();
+      if (json.data) setListings(json.data);
     } catch (err) {
-      console.error("Failed to fetch market data:", err);
-    } finally {
-      setLoading(false);
+      console.error(err);
     }
   }, []);
 
-  // Automatically verify Paystack payment when redirected back with ?reference=...
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const reference = params.get("reference") || params.get("trxref");
+    fetchListings();
+  }, [fetchListings]);
 
-    if (reference) {
-      setPaymentBanner(`Verifying Paystack payment (${reference})...`);
-      fetch(`${API_BASE}/orders/verify/${reference}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.status === "success") {
-            setPaymentBanner(
-              `Payment verified! Funds are now locked in Escrow (${reference}).`,
-            );
-          } else {
-            setPaymentBanner(`Verification warning: ${data.message}`);
-          }
-          window.history.replaceState(
-            {},
-            document.title,
-            window.location.pathname,
-          );
-          fetchMarketData();
-        })
-        .catch(() => setPaymentBanner("Could not verify payment reference."));
-    } else {
-      fetchMarketData();
-    }
-  }, [fetchMarketData]);
-
-  // USSD Request Handler
   const sendUssdPayload = async (newHistory: string[]) => {
     setUssdLoading(true);
     try {
       const body = new URLSearchParams({
-        sessionId: "sim-session-01",
+        sessionId: "sim-01",
         serviceCode: "*384*100#",
         phoneNumber: farmerPhone,
         text: newHistory.join("*"),
       });
-
       const res = await fetch(`${API_BASE}/ussd`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: body.toString(),
       });
-
-      const responseText = await res.text();
-      const isContinue = responseText.startsWith("CON ");
-      const cleanText = responseText.replace(/^(CON|END)\s+/, "");
-
-      setUssdScreenText(cleanText);
-      setUssdSessionActive(isContinue);
-
-      if (!isContinue) {
+      const text = await res.text();
+      setUssdSessionActive(text.startsWith("CON "));
+      setUssdScreenText(text.replace(/^(CON|END)\s+/, ""));
+      if (!text.startsWith("CON ")) {
         setUssdHistory([]);
-        fetchMarketData();
+        fetchListings();
       }
     } catch {
-      setUssdScreenText(
-        "Connection error: Ensure backend is running on port 8000.",
-      );
+      setUssdScreenText("Error: Ensure backend is running on port 8000.");
       setUssdSessionActive(false);
     } finally {
       setUssdLoading(false);
     }
   };
 
-  const handleDialUssd = () => {
-    setUssdHistory([]);
-    setUssdInput("");
-    sendUssdPayload([]);
-  };
-
-  const handleUssdReply = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ussdInput.trim()) return;
-    const updatedHistory = [...ussdHistory, ussdInput.trim()];
-    setUssdHistory(updatedHistory);
-    setUssdInput("");
-    sendUssdPayload(updatedHistory);
-  };
-
-  // Initialize Real Paystack Checkout
-  const handleInitiatePaystack = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedListing) return;
-    setCheckoutLoading(true);
-
-    try {
-      const res = await fetch(`${API_BASE}/orders/checkout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          listingId: selectedListing._id,
-          buyerName,
-          buyerEmail,
-          buyerPhone,
-        }),
-      });
-
-      const result = await res.json();
-      if (res.ok && result.data?.authorizationUrl) {
-        // Redirect browser to official Paystack Checkout page
-        window.location.href = result.data.authorizationUrl;
-      } else {
-        alert(
-          result.message ||
-            "Failed to initialize Paystack transaction. Check PAYSTACK_SECRET_KEY in .env",
-        );
-      }
-    } catch (error) {
-      console.error("Paystack error:", error);
-      alert("Network error initializing payment.");
-    } finally {
-      setCheckoutLoading(false);
-    }
-  };
-
-  // Confirm Delivery & Release Escrow
-  const handleConfirmDelivery = async (orderId: string) => {
-    try {
-      const res = await fetch(
-        `${API_BASE}/orders/${orderId}/confirm-delivery`,
-        {
-          method: "PATCH",
-        },
-      );
-      if (res.ok) fetchMarketData();
-    } catch (error) {
-      console.error("Confirm delivery error:", error);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
-      {/* Header */}
-      <header className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between pb-6 mb-6 border-b border-slate-800 gap-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-              <Sprout className="w-6 h-6" />
+    <div className="min-h-screen bg-white text-slate-800 font-sans flex flex-col">
+      {/* FIXED HEADER */}
+      <header className="sticky top-0 z-50 w-full bg-[#43b05c] text-white shadow-lg border-b border-white/10">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+          <Link href="/" className="flex items-center gap-2.5 text-left group">
+            <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center border border-white/25">
+              <Sprout className="w-6 h-6 text-white" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white">
-              AgriNode{" "}
-              <span className="text-emerald-400 font-normal text-lg">
-                | NIN-Verified USSD & Paystack Escrow
+            <div>
+              <span className="text-2xl font-extrabold tracking-tight block leading-none">
+                AgriNode
               </span>
-            </h1>
-          </div>
-          <p className="text-slate-400 text-sm mt-1">
-            KYC-verified rural smallholder marketplace across the 6 FCT Area
-            Councils.
-          </p>
+              <span className="text-[11px] text-white/80 tracking-wider uppercase font-semibold">
+                USSD • Escrow
+              </span>
+            </div>
+          </Link>
+
+          <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-white/95">
+            <Link
+              href="/"
+              className={`hover:text-white transition pb-1 ${pathname === "/" ? "border-b-2 border-white font-bold" : ""}`}
+            >
+              How It Works
+            </Link>
+            <Link
+              href="/marketplace"
+              className={`hover:text-white transition pb-1 flex items-center gap-1.5`}
+            >
+              Marketplace{" "}
+              <span className="bg-white/20 text-white text-[11px] px-2 py-0.5 rounded-full">
+                {listings.length}
+              </span>
+            </Link>
+            <button
+              onClick={() => setShowFloatingUssd(!showFloatingUssd)}
+              className="hover:text-white transition pb-1 flex items-center gap-1"
+            >
+              <Phone className="w-3.5 h-3.5" /> Dial *384*100#
+            </button>
+          </nav>
+
+          <Link
+            href="/admin"
+            className="px-6 py-2 rounded-full bg-white/15 hover:bg-white/25 border border-white/30 backdrop-blur text-sm font-semibold text-white transition flex items-center gap-2"
+          >
+            <Lock className="w-3.5 h-3.5" /> Escrow Login
+          </Link>
         </div>
 
-        <button
-          onClick={fetchMarketData}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sm font-medium transition"
-        >
-          <RefreshCw
-            className={`w-4 h-4 ${loading ? "animate-spin text-emerald-400" : ""}`}
-          />
-          Refresh Ledger
-        </button>
+        {/* Mobile Nav Bar - Inside sticky header so it stays pinned */}
+        <div className="md:hidden flex items-center justify-center gap-2 px-4 pb-4 flex-wrap">
+          <Link
+            href="/"
+            className="px-3 py-1.5 rounded-full text-xs font-semibold bg-white text-[#43b05c]"
+          >
+            Home
+          </Link>
+          <Link
+            href="/marketplace"
+            className="px-3 py-1.5 rounded-full text-xs font-semibold bg-white/15 text-white"
+          >
+            Marketplace
+          </Link>
+        </div>
       </header>
 
-      {/* Paystack Verification Notification Banner */}
-      {paymentBanner && (
-        <div className="max-w-7xl mx-auto mb-6 bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-xl flex items-center justify-between text-sm">
-          <span>{paymentBanner}</span>
-          <button
-            onClick={() => setPaymentBanner(null)}
-            className="text-emerald-400 hover:text-white"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* LEFT COLUMN: USSD KYC & LISTING TERMINAL */}
-        <section className="lg:col-span-4 flex flex-col items-center">
-          <div className="w-full max-w-sm bg-slate-900 border-2 border-slate-800 rounded-3xl p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
-              <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                <Phone className="w-3.5 h-3.5" /> USSD GSM Terminal
-              </span>
-              <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded">
-                *384*100#
-              </span>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-xs text-slate-400 mb-1">
-                Farmer Phone Number (Change to test new user)
-              </label>
-              <input
-                type="text"
-                value={farmerPhone}
-                onChange={(e) => setFarmerPhone(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-sm text-slate-200 font-mono"
-              />
-            </div>
-
-            {/* Nokia-style LCD Screen */}
-            <div className="bg-[#9bbc0f] text-slate-950 font-mono p-4 rounded-xl min-h-[210px] flex flex-col justify-between shadow-inner border-4 border-slate-800">
-              <div className="text-[11px] font-bold border-b border-slate-950/20 pb-1 flex justify-between">
-                <span>FCT AGRINODE</span>
-                <span>2G USSD</span>
+      {/* MAIN CONTENT (Grows to push footer down) */}
+      <div className="flex-grow">
+        {/* Hero Section */}
+        <div className="relative bg-[#43b05c] text-white overflow-hidden pt-8 pb-28 lg:pb-36">
+          <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 lg:grid-cols-12 gap-12 items-center relative z-10">
+            <div className="lg:col-span-7 space-y-6 text-center lg:text-left">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/15 border border-white/25 text-xs font-semibold tracking-wide uppercase">
+                <Sprout className="w-3.5 h-3.5" /> Advancing Rural Digital
+                Inclusion
               </div>
-
-              <div className="my-3 whitespace-pre-line text-xs font-bold leading-relaxed">
-                {ussdLoading ? "Connecting to USSD gateway..." : ussdScreenText}
-              </div>
-
-              <div className="text-[10px] opacity-75 text-right">
-                {ussdSessionActive
-                  ? "CON (Waiting for input)"
-                  : "END (Session closed)"}
-              </div>
-            </div>
-
-            {ussdSessionActive ? (
-              <form onSubmit={handleUssdReply} className="mt-4 flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Reply option / NIN / value..."
-                  value={ussdInput}
-                  onChange={(e) => setUssdInput(e.target.value)}
-                  autoFocus
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                />
-                <button
-                  type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
-                >
-                  Send
-                </button>
-              </form>
-            ) : (
-              <button
-                onClick={handleDialUssd}
-                className="mt-4 w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 shadow-lg transition"
-              >
-                <Phone className="w-4 h-4" /> Dial *384*100#
-              </button>
-            )}
-          </div>
-        </section>
-
-        {/* RIGHT COLUMN: MARKETPLACE & PAYSTACK ESCROW LEDGER */}
-        <section className="lg:col-span-8 space-y-8">
-          {/* Crop Marketplace */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold text-white">
-                  Verified FCT Farmer Listings
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Every farmer below is registered with their Area Council and
-                  11-digit NIN
-                </p>
-              </div>
-              <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs px-3 py-1 rounded-full font-medium">
-                {listings.length} Live Lots
-              </span>
-            </div>
-
-            {listings.length === 0 ? (
-              <div className="text-center py-12 border border-dashed border-slate-800 rounded-xl text-slate-400 text-sm">
-                No verified listings yet. Dial *384*100# on the left to register
-                a farmer and list a crop!
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {listings.map((item) => (
-                  <div
-                    key={item._id}
-                    className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-base font-bold text-white">
-                          {item.quantity}kg {item.cropType}
-                        </span>
-                        <span className="text-xs bg-slate-900 border border-slate-700 text-slate-300 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                          <MapPin className="w-3 h-3 text-emerald-400" />{" "}
-                          {item.areaCouncil}
-                        </span>
-                      </div>
-
-                      <p className="text-2xl font-extrabold text-emerald-400 mt-2">
-                        NGN {item.price.toLocaleString()}
-                      </p>
-
-                      <div className="mt-3 pt-3 border-t border-slate-900 text-xs text-slate-400 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span>
-                            Farmer:{" "}
-                            <strong className="text-slate-200">
-                              {item.farmerId?.name}
-                            </strong>
-                          </span>
-                          {item.farmerId?.nin && (
-                            <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                              <BadgeCheck className="w-3.5 h-3.5" /> NIN
-                              Verified
-                            </span>
-                          )}
-                        </div>
-                        <p>
-                          Tel:{" "}
-                          <span className="font-mono text-slate-300">
-                            {item.farmerId?.phoneNumber}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => setSelectedListing(item)}
-                      className="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-                    >
-                      <CreditCard className="w-3.5 h-3.5" /> Fund Escrow via
-                      Paystack
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Escrow Orders Ledger */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <div className="mb-4">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-indigo-400" /> Paystack
-                Escrow & Settlement Ledger
-              </h2>
-              <p className="text-xs text-slate-400">
-                Tracks Paystack payment references, locked farmer escrow
-                balances, and final settlements
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-tight">
+                AgriNode
+                <span className="block text-white/90 font-light text-2xl sm:text-3xl mt-2">
+                  Offline USSD Farm-to-Market & Escrow
+                </span>
+              </h1>
+              <p className="text-base sm:text-lg text-white/90 max-w-2xl mx-auto lg:mx-0 leading-relaxed">
+                Smallholder farmers dial{" "}
+                <strong className="underline decoration-white/60">
+                  *384*100#
+                </strong>{" "}
+                on any basic 2G phone to list crops. Official crop images
+                automatically attach from the Master Catalog. Urban buyers
+                purchase with 100% Paystack Escrow protection.
               </p>
+              <div className="flex flex-wrap items-center justify-center lg:justify-start gap-4 pt-2">
+                <Link
+                  href="/marketplace"
+                  className="px-7 py-3.5 rounded-full bg-white text-[#35964b] hover:bg-slate-50 font-bold text-sm shadow-lg flex items-center gap-2 transition"
+                >
+                  Browse Verified Produce <ArrowRight className="w-4 h-4" />
+                </Link>
+              </div>
             </div>
 
-            {orders.length === 0 ? (
-              <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-400 text-sm">
-                No escrow transactions recorded yet.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {orders.map((order) => (
-                  <div
-                    key={order._id}
-                    className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-white text-sm">
-                          {order.listingId?.quantity}kg{" "}
-                          {order.listingId?.cropType}
-                        </span>
-                        <span className="text-xs font-mono text-slate-400">
-                          Ref: {order.paymentReference}
-                        </span>
-                        <span
-                          className={`text-[11px] px-2.5 py-0.5 rounded-full font-semibold ${
-                            order.paymentStatus === "held_in_escrow"
-                              ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                              : order.paymentStatus === "released"
-                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                                : "bg-slate-800 text-slate-400"
-                          }`}
-                        >
-                          {order.paymentStatus.toUpperCase().replace(/_/g, " ")}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400">
-                        Amount:{" "}
-                        <strong className="text-slate-200">
-                          NGN {order.amountPaid.toLocaleString()}
-                        </strong>{" "}
-                        • Farmer:{" "}
-                        <strong className="text-slate-200">
-                          {order.listingId?.farmerId?.name}
-                        </strong>{" "}
-                        ({order.listingId?.areaCouncil})
-                      </p>
-                    </div>
-
-                    {order.paymentStatus === "held_in_escrow" && (
-                      <button
-                        onClick={() => handleConfirmDelivery(order._id)}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition"
-                      >
-                        <Truck className="w-4 h-4" /> Confirm Delivery & Release
-                        Payout
-                      </button>
-                    )}
-
-                    {order.paymentStatus === "released" && (
-                      <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-semibold">
-                        <CheckCircle2 className="w-4 h-4" /> Settled to Farmer
-                        Wallet
-                      </div>
-                    )}
+            {/* Interactive Mobile Phone */}
+            <div className="lg:col-span-5 flex justify-center">
+              <div className="relative w-full max-w-[330px] bg-slate-900 rounded-[42px] p-4 shadow-2xl border-[6px] border-slate-800">
+                <div className="w-16 h-1.5 bg-slate-700 rounded-full mx-auto mb-3" />
+                <div className="mb-2.5 px-1">
+                  <input
+                    type="text"
+                    value={farmerPhone}
+                    onChange={(e) => setFarmerPhone(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white font-mono"
+                  />
+                </div>
+                <div className="bg-[#9bbc0f] text-slate-950 font-mono p-4 rounded-2xl min-h-[210px] flex flex-col justify-between shadow-inner border-4 border-slate-800">
+                  <div className="text-[10px] font-bold border-b border-slate-950/20 pb-1 flex justify-between">
+                    <span>MTN-NG • FCT</span>
+                    <span>*384*100#</span>
                   </div>
-                ))}
+                  <div className="my-2 whitespace-pre-line text-xs font-bold leading-snug">
+                    {ussdLoading ? "Connecting..." : ussdScreenText}
+                  </div>
+                  <div className="text-[10px] opacity-75 text-right font-semibold">
+                    {ussdSessionActive ? "CON" : "END"}
+                  </div>
+                </div>
+                <div className="mt-3 px-1 pb-1">
+                  {ussdSessionActive ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const next = [...ussdHistory, ussdInput.trim()];
+                        setUssdHistory(next);
+                        setUssdInput("");
+                        sendUssdPayload(next);
+                      }}
+                      className="flex gap-2"
+                    >
+                      <input
+                        type="text"
+                        value={ussdInput}
+                        onChange={(e) => setUssdInput(e.target.value)}
+                        autoFocus
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                      />
+                      <button
+                        type="submit"
+                        className="bg-[#43b05c] text-white px-4 py-2 rounded-xl text-xs font-bold"
+                      >
+                        Send
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setUssdHistory([]);
+                        setUssdInput("");
+                        sendUssdPayload([]);
+                      }}
+                      className="w-full bg-[#43b05c] text-white py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg"
+                    >
+                      <Phone className="w-4 h-4" /> Dial *384*100#
+                    </button>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
-        </section>
-      </main>
-
-      {/* PAYSTACK CHECKOUT MODAL */}
-      {selectedListing && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="font-bold text-white flex items-center gap-2">
-                <Lock className="w-4 h-4 text-indigo-400" /> Initialize Paystack
-                Escrow
-              </h3>
-              <button
-                onClick={() => setSelectedListing(null)}
-                className="text-slate-400 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
-
-            <form onSubmit={handleInitiatePaystack} className="mt-4 space-y-4">
-              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs space-y-1">
-                <p className="text-slate-400">
-                  Produce:{" "}
-                  <strong className="text-white">
-                    {selectedListing.quantity}kg {selectedListing.cropType}
-                  </strong>
-                </p>
-                <p className="text-slate-400">
-                  Farmer:{" "}
-                  <strong className="text-white">
-                    {selectedListing.farmerId?.name} (
-                    {selectedListing.areaCouncil})
-                  </strong>
-                </p>
-                <p className="text-base font-bold text-emerald-400 pt-1">
-                  Escrow Amount: NGN {selectedListing.price.toLocaleString()}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">
-                  Buyer / Company Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={buyerName}
-                  onChange={(e) => setBuyerName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">
-                  Buyer Email (For Paystack Receipt)
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={buyerEmail}
-                  onChange={(e) => setBuyerEmail(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">
-                  Buyer Phone Number
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={buyerPhone}
-                  onChange={(e) => setBuyerPhone(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white font-mono"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={checkoutLoading}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-semibold transition"
-              >
-                {checkoutLoading
-                  ? "Redirecting to Paystack..."
-                  : `Pay NGN ${selectedListing.price.toLocaleString()} to Escrow`}
-              </button>
-            </form>
+          </div>
+          {/* SVG Wave */}
+          <div className="absolute bottom-0 left-0 w-full overflow-hidden leading-none pointer-events-none">
+            <svg
+              viewBox="0 0 1440 110"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              className="w-full h-14 sm:h-20 lg:h-24"
+              preserveAspectRatio="none"
+            >
+              <path
+                d="M0 20C480 120 960 120 1440 20V110H0V20Z"
+                fill="#FFFFFF"
+              />
+            </svg>
           </div>
         </div>
-      )}
+
+        <section className="max-w-7xl mx-auto px-6 py-12 space-y-20">
+          <div>
+            <div className="text-center max-w-2xl mx-auto mb-12">
+              <span className="text-xs font-bold uppercase tracking-widest text-[#43b05c]">
+                End-to-End Architecture
+              </span>
+              <h2 className="text-2xl sm:text-3xl font-bold text-slate-800 mt-1">
+                How AgriNode Works
+              </h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                <div className="w-12 h-12 rounded-2xl bg-[#43b05c]/10 text-[#43b05c] flex items-center justify-center font-bold mb-4">
+                  <Smartphone className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-bold text-[#43b05c] uppercase tracking-wider">
+                  Step 01 • Offline USSD
+                </span>
+                <h3 className="text-base font-bold text-slate-900 mt-1">
+                  Farmer KYC & Crop Listing
+                </h3>
+                <p className="text-xs text-slate-600 mt-2">
+                  Farmers dial <strong>*384*100#</strong> on any 2G feature
+                  phone to register their <strong>11-digit NIN</strong> and
+                  broadcast harvest lots.
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                <div className="w-12 h-12 rounded-2xl bg-[#43b05c]/10 text-[#43b05c] flex items-center justify-center font-bold mb-4">
+                  <LayoutGrid className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-bold text-[#43b05c] uppercase tracking-wider">
+                  Step 02 • Auto Image Sync
+                </span>
+                <h3 className="text-base font-bold text-slate-900 mt-1">
+                  Master Catalog Mapping
+                </h3>
+                <p className="text-xs text-slate-600 mt-2">
+                  Because 2G phones cannot upload photos, AgriNode automatically
+                  attaches high-quality images and descriptions from the Admin's
+                  catalog.
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                <div className="w-12 h-12 rounded-2xl bg-[#43b05c]/10 text-[#43b05c] flex items-center justify-center font-bold mb-4">
+                  <Lock className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-bold text-[#43b05c] uppercase tracking-wider">
+                  Step 03 • Escrow Vault
+                </span>
+                <h3 className="text-base font-bold text-slate-900 mt-1">
+                  Protected Checkout
+                </h3>
+                <p className="text-xs text-slate-600 mt-2">
+                  Urban wholesalers browse verified produce and fund purchases
+                  via <strong>Paystack</strong>. Funds lock in Escrow and the
+                  buyer gets a <strong>6-digit PIN</strong>.
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                <div className="w-12 h-12 rounded-2xl bg-[#43b05c]/10 text-[#43b05c] flex items-center justify-center font-bold mb-4">
+                  <Wallet className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-bold text-[#43b05c] uppercase tracking-wider">
+                  Step 04 • Instant Settlement
+                </span>
+                <h3 className="text-base font-bold text-slate-900 mt-1">
+                  PIN Confirmation
+                </h3>
+                <p className="text-xs text-slate-600 mt-2">
+                  Upon delivery, the buyer shares the PIN. The Escrow Officer
+                  verifies it and releases <strong>98% of the funds</strong>{" "}
+                  directly to the farmer.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="max-w-4xl mx-auto border-t border-slate-200 pt-16 pb-8">
+            <div className="text-center mb-10">
+              <span className="text-xs font-bold uppercase tracking-widest text-[#43b05c]">
+                Platform Operations
+              </span>
+              <h2 className="text-2xl font-bold text-slate-900 mt-1">
+                Frequently Asked Logistics Questions
+              </h2>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <h4 className="font-bold text-slate-900 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-[#43b05c]" />
+                  1. How do buyers and sellers connect physically?
+                </h4>
+                <p className="text-sm text-slate-600 mt-2 pl-6">
+                  During checkout, the buyer provides their delivery address.
+                  The Escrow Officer views this and dispatches a truck to pick
+                  up the harvest from the farmer's registered Area Council and
+                  deliver it to the buyer.
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <h4 className="font-bold text-slate-900 flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-[#43b05c]" />
+                  2. We didn't ask the farmer for a Bank Account. How are they
+                  paid?
+                </h4>
+                <p className="text-sm text-slate-600 mt-2 pl-6">
+                  To prevent USSD sessions from timing out, we only ask for the
+                  NIN during onboarding. When the buyer confirms delivery, the
+                  funds settle into the farmer's virtual{" "}
+                  <strong>AgriNode Wallet</strong>. When ready for cash, they
+                  dial <code>*384*100#</code>, select{" "}
+                  <strong>"Withdraw to Bank"</strong>, and enter their 10-digit
+                  account number.
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <h4 className="font-bold text-slate-900 flex items-center gap-2">
+                  <Sprout className="w-4 h-4 text-[#43b05c]" />
+                  3. What is our gain? How is AgriNode getting paid?
+                </h4>
+                <p className="text-sm text-slate-600 mt-2 pl-6">
+                  AgriNode deducts a flat{" "}
+                  <strong>2% platform commission</strong> from the total
+                  transaction value only at the point of final settlement. If a
+                  crop sells for NGN 100,000, the farmer receives NGN 98,000,
+                  and AgriNode retains NGN 2,000.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {/* FOOTER */}
+      <footer className="bg-slate-900 text-slate-400 py-12 mt-auto border-t border-slate-800">
+        <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div>
+            <h4 className="text-white font-bold text-lg mb-3 flex items-center gap-2">
+              <Sprout className="w-5 h-5 text-[#43b05c]" /> AgriNode
+            </h4>
+            <p className="text-xs leading-relaxed max-w-xs">
+              Bridging the rural connectivity gap and solving the two-sided
+              trust deficit between remote farmers and urban buyers via offline
+              USSD and Paystack Escrow.
+            </p>
+          </div>
+          <div>
+            <h4 className="text-white font-bold mb-3">Platform Links</h4>
+            <ul className="space-y-2 text-xs">
+              <li>
+                <Link href="/" className="hover:text-[#43b05c] transition">
+                  How It Works
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/marketplace"
+                  className="hover:text-[#43b05c] transition"
+                >
+                  Buyer Marketplace
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/marketplace"
+                  className="hover:text-[#43b05c] transition"
+                >
+                  Track Delivery PIN
+                </Link>
+              </li>
+              <li>
+                <Link href="/admin" className="hover:text-[#43b05c] transition">
+                  Escrow Officer Login
+                </Link>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-white font-bold mb-3">Contact & Legal</h4>
+            <ul className="space-y-2 text-xs">
+              <li>
+                USSD Code: <strong className="text-[#43b05c]">*384*100#</strong>
+              </li>
+              <li>Email: support@agrinode.ng</li>
+              <li>Location: Bwari, FCT, Nigeria</li>
+            </ul>
+          </div>
+        </div>
+        <div className="max-w-7xl mx-auto px-6 pt-6 mt-8 border-t border-slate-800 text-[11px] flex flex-col md:flex-row justify-between items-center gap-4">
+          <p>
+            &copy; {new Date().getFullYear()} AgriNode FCT. Built for the USPF
+            Changemaker Challenge.
+          </p>
+          <div className="flex gap-4">
+            <Link href="#" className="hover:text-white transition">
+              Terms of Service
+            </Link>
+            <Link href="#" className="hover:text-white transition">
+              Privacy Policy
+            </Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

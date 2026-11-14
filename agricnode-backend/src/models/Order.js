@@ -14,6 +14,11 @@ const orderSchema = new mongoose.Schema(
     },
     buyerEmail: { type: String, required: true },
     amountPaid: { type: Number, required: true },
+    buyerAddress: { type: String, required: true },
+    buyerPhone: { type: String },
+    platformFee: { type: Number, required: true }, // 2% AgriNode sustainability fee
+    farmerPayout: { type: Number, required: true }, // 98% net payout to farmer
+    deliveryPin: { type: String }, // 6-digit PIN given to buyer to confirm delivery
     paymentReference: {
       type: String,
       required: true,
@@ -31,6 +36,8 @@ const orderSchema = new mongoose.Schema(
       enum: ["awaiting_payment", "pending_dispatch", "in_transit", "delivered"],
       default: "awaiting_payment",
     },
+    releasedAt: { type: Date },
+    releasedBy: { type: String },
   },
   { timestamps: true },
 );

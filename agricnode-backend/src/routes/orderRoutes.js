@@ -1,17 +1,29 @@
 const express = require("express");
 const router = express.Router();
+const { requireEscrowAdmin } = require("../middleware/authMiddleware");
 const {
-  getOrders,
+  getEscrowDashboardData,
   initializeCheckout,
   verifyOrderPayment,
+  trackOrderByReference,
   handlePaystackWebhook,
-  confirmDelivery,
+  markOrderInTransit,
+  confirmDeliveryAndRelease,
 } = require("../controllers/orderController");
 
-router.get("/", getOrders);
+// Public Buyer Marketplace Routes
 router.post("/checkout", initializeCheckout);
 router.get("/verify/:reference", verifyOrderPayment);
+router.get("/track/:reference", trackOrderByReference);
 router.post("/webhook", handlePaystackWebhook);
-router.patch("/:orderId/confirm-delivery", confirmDelivery);
+
+// Secured Escrow Admin Routes (JWT Protected)
+router.get("/", requireEscrowAdmin, getEscrowDashboardData);
+router.patch("/:orderId/dispatch", requireEscrowAdmin, markOrderInTransit);
+router.patch(
+  "/:orderId/confirm-delivery",
+  requireEscrowAdmin,
+  confirmDeliveryAndRelease,
+);
 
 module.exports = router;
