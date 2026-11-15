@@ -1,11 +1,20 @@
+const crypto = require("crypto");
 const Order = require("../models/Order");
 const Listing = require("../models/Listing");
-
-// Assuming you have a Paystack helper utility. If not, this is standard fetch logic.
+const User = require("../models/User");
 const {
   initializeTransaction,
   verifyTransaction,
 } = require("../utils/paystack");
+
+// Helper for full nested population (Listing -> Farmer + Crop Product)
+const listingPopulateConfig = {
+  path: "listingId",
+  populate: [
+    { path: "farmerId", select: "name phoneNumber areaCouncil" },
+    { path: "productId" },
+  ],
+};
 
 exports.initializeCheckout = async (req, res) => {
   try {
@@ -30,19 +39,25 @@ exports.initializeCheckout = async (req, res) => {
         .json({ status: "error", message: "This lot is no longer available" });
     }
 
-    // You likely have a Buyer/User lookup here. We'll use a placeholder ID if you don't enforce strict buyer auth.
-    const buyerId = req.user ? req.user._id : "000000000000000000000000";
+    // Find or create buyer record
+    let buyer = await User.findOne({ phoneNumber: buyerPhone });
+    if (!buyer) {
+      buyer = await User.create({
+        name: buyerName,
+        phoneNumber: buyerPhone,
+        role: "buyer",
+        areaCouncil: "AMAC",
+      });
+    }
 
     const reference = `AGR-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const deliveryPin = Math.floor(100000 + Math.random() * 900000).toString(); // FIX: Generate 6-digit PIN upfront
-
+    const deliveryPin = Math.floor(100000 + Math.random() * 900000).toString();
     const platformFee = Math.round(listing.price * 0.02); // 2% escrow fee
     const farmerPayout = listing.price - platformFee;
     const frontendUrl = (
       process.env.FRONTEND_URL || "http://localhost:3000"
     ).replace(/\/$/, "");
 
-    // FIX: callbackUrl now correctly points to /marketplace
     const paystackData = await initializeTransaction({
       email: buyerEmail,
       amountNaira: listing.price,
@@ -50,35 +65,41 @@ exports.initializeCheckout = async (req, res) => {
       callbackUrl: `${frontendUrl}/marketplace?reference=${reference}`,
       metadata: {
         listingId: listing._id.toString(),
-        buyerId: buyerId.toString(),
+        buyerId: buyer._id.toString(),
       },
     });
 
     const order = await Order.create({
       listingId: listing._id,
-      buyerId,
+      buyerId: buyer._id,
       buyerEmail,
       buyerPhone,
-      buyerAddress, // Saved for logistics
+      buyerAddress,
       amountPaid: listing.price,
       platformFee,
       farmerPayout,
       paymentReference: reference,
-      deliveryPin, // FIX: PIN is saved immediately
+      deliveryPin,
       paymentStatus: "pending_payment",
       deliveryStatus: "awaiting_payment",
     });
 
-    // Mark listing as pending so others don't buy it during checkout
-    listing.status = "pending_escrow";
-    await listing.save();
-
-    res.status(200).json({ status: "success", data: paystackData });
+    res.status(201).json({
+      status: "success",
+      data: {
+        ...paystackData,
+        authorizationUrl: paystackData.authorization_url,
+        reference,
+        deliveryPin,
+        orderId: order._id,
+      },
+    });
   } catch (error) {
     console.error("Checkout Error:", error);
-    res
-      .status(500)
-      .json({ status: "error", message: "Could not initialize checkout" });
+    res.status(500).json({
+      status: "error",
+      message: error.message || "Could not initialize checkout",
+    });
   }
 };
 
@@ -86,9 +107,8 @@ exports.verifyPayment = async (req, res) => {
   try {
     const { reference } = req.params;
 
-    // Check our DB first
     let order = await Order.findOne({ paymentReference: reference }).populate(
-      "listingId",
+      listingPopulateConfig,
     );
     if (!order) {
       return res
@@ -96,7 +116,6 @@ exports.verifyPayment = async (req, res) => {
         .json({ status: "error", message: "Order not found" });
     }
 
-    // If already verified, just return it
     if (
       order.paymentStatus === "held_in_escrow" ||
       order.paymentStatus === "released"
@@ -104,14 +123,12 @@ exports.verifyPayment = async (req, res) => {
       return res.status(200).json({ status: "success", data: order });
     }
 
-    // Verify with Paystack API
-    const paystackStatus = await verifyTransaction(reference);
+    const paystackTx = await verifyTransaction(reference);
 
-    if (paystackStatus.status === "success") {
+    if (paystackTx.status === "success") {
       order.paymentStatus = "held_in_escrow";
       order.deliveryStatus = "pending_dispatch";
 
-      // Safety net: ensure PIN exists
       if (!order.deliveryPin) {
         order.deliveryPin = Math.floor(
           100000 + Math.random() * 900000,
@@ -119,12 +136,16 @@ exports.verifyPayment = async (req, res) => {
       }
 
       await order.save();
+      await Listing.findByIdAndUpdate(order.listingId._id || order.listingId, {
+        status: "in_escrow",
+      });
+
       return res.status(200).json({ status: "success", data: order });
     }
 
     res
       .status(400)
-      .json({ status: "error", message: "Payment verification failed" });
+      .json({ status: "error", message: "Payment not completed on Paystack" });
   } catch (error) {
     console.error("Verification Error:", error);
     res
@@ -133,20 +154,62 @@ exports.verifyPayment = async (req, res) => {
   }
 };
 
+// ============================================================================
+// 3. PAYSTACK WEBHOOK HANDLER (POST /api/orders/webhook)
+// ============================================================================
+exports.handleWebhook = async (req, res) => {
+  try {
+    const secret = process.env.PAYSTACK_SECRET_KEY || "";
+    const hash = crypto
+      .createHmac("sha512", secret)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    if (hash !== req.headers["x-paystack-signature"]) {
+      return res.status(401).send("Invalid signature");
+    }
+
+    const event = req.body;
+    if (event.event === "charge.success") {
+      const { reference } = event.data;
+      const order = await Order.findOne({ paymentReference: reference });
+
+      if (order && order.paymentStatus === "pending_payment") {
+        order.paymentStatus = "held_in_escrow";
+        order.deliveryStatus = "pending_dispatch";
+        if (!order.deliveryPin) {
+          order.deliveryPin = Math.floor(
+            100000 + Math.random() * 900000,
+          ).toString();
+        }
+        await order.save();
+        await Listing.findByIdAndUpdate(order.listingId, {
+          status: "in_escrow",
+        });
+      }
+    }
+
+    res.status(200).send("Webhook received");
+  } catch (error) {
+    console.error("Webhook Error:", error);
+    res.status(500).send("Webhook error");
+  }
+};
+
+// Alias in case orderRoutes.js uses paystackWebhook
+exports.paystackWebhook = exports.handleWebhook;
+
 exports.trackOrder = async (req, res) => {
   try {
     const { reference } = req.params;
-    const order = await Order.findOne({ paymentReference: reference }).populate(
-      {
-        path: "listingId",
-        populate: { path: "farmerId", select: "name phoneNumber areaCouncil" },
-      },
-    );
+    const order = await Order.findOne({ paymentReference: reference })
+      .populate(listingPopulateConfig)
+      .populate("buyerId", "name phoneNumber");
 
     if (!order) {
       return res
         .status(404)
-        .json({ status: "error", message: "Order not found" });
+        .json({ status: "error", message: "Order reference not found" });
     }
 
     res.status(200).json({ status: "success", data: order });
@@ -158,13 +221,10 @@ exports.trackOrder = async (req, res) => {
 exports.getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
-      .populate({
-        path: "listingId",
-        populate: { path: "farmerId", select: "name phoneNumber" },
-      })
+      .populate(listingPopulateConfig)
+      .populate("buyerId", "name phoneNumber")
       .sort("-createdAt");
 
-    // Calculate Vault Metrics
     const metrics = {
       totalLockedInEscrow: 0,
       totalSettledToFarmers: 0,
@@ -199,17 +259,20 @@ exports.dispatchOrder = async (req, res) => {
   try {
     const { id } = req.params;
     const order = await Order.findById(id);
-    if (!order)
+    if (!order) {
       return res
         .status(404)
         .json({ status: "error", message: "Order not found" });
+    }
 
     order.deliveryStatus = "in_transit";
     await order.save();
 
-    res
-      .status(200)
-      .json({ status: "success", message: "Order marked as in-transit" });
+    res.status(200).json({
+      status: "success",
+      message: "Order marked as in-transit",
+      data: order,
+    });
   } catch (error) {
     res
       .status(500)
@@ -220,13 +283,14 @@ exports.dispatchOrder = async (req, res) => {
 exports.confirmDelivery = async (req, res) => {
   try {
     const { id } = req.params;
-    const { deliveryPin } = req.body;
+    const submittedPin = (req.body.deliveryPin || req.body.pin || "").trim();
 
     const order = await Order.findById(id).populate("listingId");
-    if (!order)
+    if (!order) {
       return res
         .status(404)
         .json({ status: "error", message: "Order not found" });
+    }
 
     if (order.paymentStatus === "released") {
       return res
@@ -234,29 +298,27 @@ exports.confirmDelivery = async (req, res) => {
         .json({ status: "error", message: "Funds have already been released" });
     }
 
-    if (order.deliveryPin !== deliveryPin.trim()) {
+    if (!submittedPin || order.deliveryPin !== submittedPin) {
       return res
         .status(400)
         .json({ status: "error", message: "Invalid 6-digit Delivery PIN" });
     }
 
-    // Success - Release Funds
     order.paymentStatus = "released";
     order.deliveryStatus = "delivered";
+    order.releasedAt = new Date();
     await order.save();
 
-    // Mark listing as permanently sold
     if (order.listingId) {
-      order.listingId.status = "sold";
-      await order.listingId.save();
+      await Listing.findByIdAndUpdate(order.listingId._id || order.listingId, {
+        status: "sold",
+      });
     }
-
-    // NOTE: In a real system, you would trigger the Paystack Transfers API here
-    // to instantly push the `order.farmerPayout` to the Farmer's registered Bank Account.
 
     res.status(200).json({
       status: "success",
       message: "Escrow funds released to farmer successfully!",
+      data: order,
     });
   } catch (error) {
     res
