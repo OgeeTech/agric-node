@@ -1,7 +1,9 @@
 const User = require("../models/User");
 const Listing = require("../models/Listing");
 const Product = require("../models/Product");
+const Order = require("../models/Order");
 const { parseUssdText } = require("../utils/ussdHelper");
+const { verifyTransaction } = require("../utils/paystack");
 
 const AREA_COUNCILS = {
   1: "Bwari",
@@ -20,9 +22,6 @@ const handleUssd = async (req, res) => {
 
     let user = await User.findOne({ phoneNumber });
 
-    // =========================================================================
-    // BRANCH A: UNREGISTERED FARMER -> FORCE KYC REGISTRATION
-    // =========================================================================
     if (!user || !user.isRegistered) {
       if (step === 0) {
         response = `CON Welcome to AgriNode FCT.\nYou must register before listing crops.\n1. Register as a Farmer`;
@@ -77,10 +76,6 @@ const handleUssd = async (req, res) => {
       return res.send(response);
     }
 
-    // =========================================================================
-    // BRANCH B: REGISTERED FARMER -> MARKETPLACE & ESCROW WALLET MENU
-    // =========================================================================
-
     // Fetch live catalog from database (Admin-managed products)
     const catalog = await Product.find().sort({ ussdCode: 1 });
 
@@ -99,7 +94,9 @@ const handleUssd = async (req, res) => {
         response = menu;
       }
     } else if (step === 2 && inputs[0] === "1") {
-      const selectedProduct = catalog.find((p) => p.ussdCode === inputs[1]);
+      const selectedProduct = catalog.find(
+        (p) => String(p.ussdCode) === String(inputs[1]).trim(),
+      );
       if (!selectedProduct) {
         response = `END Invalid crop selection. Please try again.`;
       } else {
@@ -110,18 +107,22 @@ const handleUssd = async (req, res) => {
       if (isNaN(qty) || qty <= 0) {
         response = `END Invalid quantity entered.`;
       } else {
-        const selectedProduct = catalog.find((p) => p.ussdCode === inputs[1]);
+        const selectedProduct = catalog.find(
+          (p) => String(p.ussdCode) === String(inputs[1]).trim(),
+        );
         response = `CON Enter total price in NGN for ${qty}kg of ${selectedProduct.name}:`;
       }
     } else if (step === 4 && inputs[0] === "1") {
-      const selectedProduct = catalog.find((p) => p.ussdCode === inputs[1]);
+      const selectedProduct = catalog.find(
+        (p) => String(p.ussdCode) === String(inputs[1]).trim(),
+      );
       const quantity = Number(inputs[2]);
       const price = Number(inputs[3]);
 
       if (isNaN(price) || price <= 0) {
         response = `END Invalid price entered.`;
       } else {
-        // MAGIC HAPPENS HERE: Auto-attach the Admin's Image & Description
+        // Auto-attach the Admin's Image & Description
         await Listing.create({
           farmerId: user._id,
           cropType: selectedProduct.name,
@@ -130,20 +131,70 @@ const handleUssd = async (req, res) => {
           areaCouncil: user.areaCouncil,
           imageUrl: selectedProduct.imageUrl,
           description: selectedProduct.baseDescription,
+          status: "available",
         });
 
         response = `END Listed Successfully!\n${quantity}kg of ${selectedProduct.name} is now live with official images for NGN ${price.toLocaleString()}.`;
       }
     }
-    // Option 2: Check Wallet & Escrow Balances
+    // Option 2: Check Wallet & Escrow Balances (Dynamically Calculated from Orders)
     else if (step === 1 && inputs[0] === "2") {
-      response = `END Account Summary (${user.name}):\nAvailable Wallet: NGN ${user.walletBalance.toLocaleString()}\nLocked in Escrow: NGN ${user.escrowBalance.toLocaleString()}\nArea Council: ${user.areaCouncil}`;
+      const farmerListings = await Listing.find({ farmerId: user._id }).select(
+        "_id",
+      );
+      const listingIds = farmerListings.map((l) => l._id);
+
+      const farmerOrders = await Order.find({
+        listingId: { $in: listingIds },
+      });
+
+      let walletBalance = 0;
+      let escrowBalance = 0;
+
+      for (const order of farmerOrders) {
+        // Reconcile any order still marked pending_payment if buyer already paid on Paystack
+        if (
+          order.paymentStatus === "pending_payment" &&
+          order.paymentReference
+        ) {
+          try {
+            const paystackTx = await verifyTransaction(order.paymentReference);
+            const txStatus = paystackTx?.data?.status || paystackTx?.status;
+            if (txStatus === "success") {
+              order.paymentStatus = "held_in_escrow";
+              order.deliveryStatus = "pending_dispatch";
+              await order.save();
+              await Listing.findByIdAndUpdate(order.listingId, {
+                status: "in_escrow",
+              });
+            }
+          } catch {
+            // Ignore unpaid checkouts
+          }
+        }
+
+        const payout =
+          order.farmerPayout || Math.round((order.amountPaid || 0) * 0.98);
+
+        if (order.paymentStatus === "held_in_escrow") {
+          escrowBalance += payout;
+        } else if (order.paymentStatus === "released") {
+          walletBalance += payout;
+        }
+      }
+
+      // Sync calculated balances to User document
+      user.walletBalance = walletBalance;
+      user.escrowBalance = escrowBalance;
+      await user.save();
+
+      response = `END Account Summary (${user.name}):\nAvailable Wallet: NGN ${walletBalance.toLocaleString()}\nLocked in Escrow: NGN ${escrowBalance.toLocaleString()}\nArea Council: ${user.areaCouncil}`;
     }
     // Option 3: Check Active Listings
     else if (step === 1 && inputs[0] === "3") {
       const activeListings = await Listing.find({
         farmerId: user._id,
-        status: { $in: ["available", "pending_escrow"] },
+        status: { $in: ["available", "pending_escrow", "in_escrow"] },
       }).limit(3);
 
       if (activeListings.length === 0) {
@@ -152,7 +203,7 @@ const handleUssd = async (req, res) => {
         const listText = activeListings
           .map(
             (l, idx) =>
-              `${idx + 1}. ${l.quantity}kg ${l.cropType} - NGN ${l.price} (${l.status.replace("_", " ")})`,
+              `${idx + 1}. ${l.quantity}kg ${l.cropType} - NGN ${l.price.toLocaleString()} (${l.status.replace("_", " ")})`,
           )
           .join("\n");
         response = `END Your Active Crops:\n${listText}`;
