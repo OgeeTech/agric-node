@@ -554,7 +554,7 @@ export default function Marketplace() {
         </div>
         <div className="max-w-7xl mx-auto px-6 pt-6 mt-8 border-t border-slate-800 text-[11px] flex flex-col md:flex-row justify-between items-center gap-4">
           <p>
-            &copy; {new Date().getFullYear()} AgriNode FCT. Built for the USPF
+            &copy; 2026 AgriNode FCT. Built for the USPF
             Changemaker Challenge.
           </p>
           <div className="flex gap-4">
