@@ -113,6 +113,7 @@ const initializeCheckout = async (req, res) => {
       amountPaid: listing.price,
       platformFee,
       farmerPayout,
+      deliveryPin: generatedPin,
       paymentReference: reference,
       authorizationUrl: paystackData.authorization_url,
       paymentStatus: "pending_payment",
