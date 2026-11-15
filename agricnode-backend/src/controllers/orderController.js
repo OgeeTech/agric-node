@@ -103,7 +103,7 @@ exports.initializeCheckout = async (req, res) => {
   }
 };
 
-exports.verifyPayment = async (req, res) => {
+exports.verifyOrderPayment = async (req, res) => {
   try {
     const { reference } = req.params;
 
@@ -154,10 +154,34 @@ exports.verifyPayment = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 3. PAYSTACK WEBHOOK HANDLER (POST /api/orders/webhook)
-// ============================================================================
-exports.handleWebhook = async (req, res) => {
+exports.trackOrderByReference = async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const order = await Order.findOne({ paymentReference: reference })
+      .populate(listingPopulateConfig)
+      .populate("buyerId", "name phoneNumber");
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ status: "error", message: "Order reference not found" });
+    }
+
+    // Auto-backfill a 6-digit PIN if an older test order in DB was missing one
+    if (!order.deliveryPin) {
+      order.deliveryPin = Math.floor(
+        100000 + Math.random() * 900000,
+      ).toString();
+      await order.save();
+    }
+
+    res.status(200).json({ status: "success", data: order });
+  } catch (error) {
+    res.status(500).json({ status: "error", message: "Failed to track order" });
+  }
+};
+
+exports.handlePaystackWebhook = async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_SECRET_KEY || "";
     const hash = crypto
@@ -196,29 +220,7 @@ exports.handleWebhook = async (req, res) => {
   }
 };
 
-// Alias in case orderRoutes.js uses paystackWebhook
-exports.paystackWebhook = exports.handleWebhook;
-
-exports.trackOrder = async (req, res) => {
-  try {
-    const { reference } = req.params;
-    const order = await Order.findOne({ paymentReference: reference })
-      .populate(listingPopulateConfig)
-      .populate("buyerId", "name phoneNumber");
-
-    if (!order) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Order reference not found" });
-    }
-
-    res.status(200).json({ status: "success", data: order });
-  } catch (error) {
-    res.status(500).json({ status: "error", message: "Failed to track order" });
-  }
-};
-
-exports.getAllOrders = async (req, res) => {
+exports.getEscrowDashboardData = async (req, res) => {
   try {
     const orders = await Order.find()
       .populate(listingPopulateConfig)
@@ -233,7 +235,15 @@ exports.getAllOrders = async (req, res) => {
       completedCount: 0,
     };
 
-    orders.forEach((order) => {
+    for (const order of orders) {
+      // Backfill missing PIN on any older orders so none show N/A in the Admin Vault
+      if (!order.deliveryPin) {
+        order.deliveryPin = Math.floor(
+          100000 + Math.random() * 900000,
+        ).toString();
+        await order.save();
+      }
+
       if (order.paymentStatus === "held_in_escrow") {
         metrics.totalLockedInEscrow += order.amountPaid || 0;
         metrics.activeEscrowCount += 1;
@@ -242,7 +252,7 @@ exports.getAllOrders = async (req, res) => {
         metrics.totalPlatformRevenue += order.platformFee || 0;
         metrics.completedCount += 1;
       }
-    });
+    }
 
     res.status(200).json({
       status: "success",
@@ -255,10 +265,10 @@ exports.getAllOrders = async (req, res) => {
   }
 };
 
-exports.dispatchOrder = async (req, res) => {
+exports.markOrderInTransit = async (req, res) => {
   try {
-    const { id } = req.params;
-    const order = await Order.findById(id);
+    const orderId = req.params.orderId || req.params.id;
+    const order = await Order.findById(orderId);
     if (!order) {
       return res
         .status(404)
@@ -280,12 +290,12 @@ exports.dispatchOrder = async (req, res) => {
   }
 };
 
-exports.confirmDelivery = async (req, res) => {
+exports.confirmDeliveryAndRelease = async (req, res) => {
   try {
-    const { id } = req.params;
+    const orderId = req.params.orderId || req.params.id;
     const submittedPin = (req.body.deliveryPin || req.body.pin || "").trim();
 
-    const order = await Order.findById(id).populate("listingId");
+    const order = await Order.findById(orderId).populate("listingId");
     if (!order) {
       return res
         .status(404)
