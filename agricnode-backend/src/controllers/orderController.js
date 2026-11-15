@@ -7,13 +7,15 @@ const {
   verifyTransaction,
 } = require("../utils/paystack");
 
-// Helper for full nested population (Listing -> Farmer + Crop Product)
+// Safe population config matching your Listing and User schemas
 const listingPopulateConfig = {
   path: "listingId",
-  populate: [
-    { path: "farmerId", select: "name phoneNumber areaCouncil" },
-    { path: "productId" },
-  ],
+  populate: {
+    path: "farmerId",
+    select: "name phoneNumber areaCouncil",
+    options: { strictPopulate: false },
+  },
+  options: { strictPopulate: false },
 };
 
 exports.initializeCheckout = async (req, res) => {
@@ -39,7 +41,6 @@ exports.initializeCheckout = async (req, res) => {
         .json({ status: "error", message: "This lot is no longer available" });
     }
 
-    // Find or create buyer record
     let buyer = await User.findOne({ phoneNumber: buyerPhone });
     if (!buyer) {
       buyer = await User.create({
@@ -88,7 +89,8 @@ exports.initializeCheckout = async (req, res) => {
       status: "success",
       data: {
         ...paystackData,
-        authorizationUrl: paystackData.authorization_url,
+        authorizationUrl:
+          paystackData.authorizationUrl || paystackData.authorization_url,
         reference,
         deliveryPin,
         orderId: order._id,
@@ -116,29 +118,34 @@ exports.verifyOrderPayment = async (req, res) => {
         .json({ status: "error", message: "Order not found" });
     }
 
+    if (!order.deliveryPin) {
+      order.deliveryPin = Math.floor(
+        100000 + Math.random() * 900000,
+      ).toString();
+    }
+
     if (
       order.paymentStatus === "held_in_escrow" ||
       order.paymentStatus === "released"
     ) {
+      await order.save();
       return res.status(200).json({ status: "success", data: order });
     }
 
     const paystackTx = await verifyTransaction(reference);
+    const txStatus = paystackTx?.data?.status || paystackTx?.status;
 
-    if (paystackTx.status === "success") {
+    if (txStatus === "success") {
       order.paymentStatus = "held_in_escrow";
       order.deliveryStatus = "pending_dispatch";
-
-      if (!order.deliveryPin) {
-        order.deliveryPin = Math.floor(
-          100000 + Math.random() * 900000,
-        ).toString();
-      }
-
       await order.save();
-      await Listing.findByIdAndUpdate(order.listingId._id || order.listingId, {
-        status: "in_escrow",
-      });
+
+      if (order.listingId) {
+        await Listing.findByIdAndUpdate(
+          order.listingId._id || order.listingId,
+          { status: "in_escrow" },
+        );
+      }
 
       return res.status(200).json({ status: "success", data: order });
     }
@@ -159,7 +166,11 @@ exports.trackOrderByReference = async (req, res) => {
     const { reference } = req.params;
     const order = await Order.findOne({ paymentReference: reference })
       .populate(listingPopulateConfig)
-      .populate("buyerId", "name phoneNumber");
+      .populate({
+        path: "buyerId",
+        select: "name phoneNumber",
+        options: { strictPopulate: false },
+      });
 
     if (!order) {
       return res
@@ -167,7 +178,6 @@ exports.trackOrderByReference = async (req, res) => {
         .json({ status: "error", message: "Order reference not found" });
     }
 
-    // Auto-backfill a 6-digit PIN if an older test order in DB was missing one
     if (!order.deliveryPin) {
       order.deliveryPin = Math.floor(
         100000 + Math.random() * 900000,
@@ -177,6 +187,7 @@ exports.trackOrderByReference = async (req, res) => {
 
     res.status(200).json({ status: "success", data: order });
   } catch (error) {
+    console.error("Track Order Error:", error);
     res.status(500).json({ status: "error", message: "Failed to track order" });
   }
 };
@@ -207,9 +218,11 @@ exports.handlePaystackWebhook = async (req, res) => {
           ).toString();
         }
         await order.save();
-        await Listing.findByIdAndUpdate(order.listingId, {
-          status: "in_escrow",
-        });
+        if (order.listingId) {
+          await Listing.findByIdAndUpdate(order.listingId, {
+            status: "in_escrow",
+          });
+        }
       }
     }
 
@@ -224,7 +237,11 @@ exports.getEscrowDashboardData = async (req, res) => {
   try {
     const orders = await Order.find()
       .populate(listingPopulateConfig)
-      .populate("buyerId", "name phoneNumber")
+      .populate({
+        path: "buyerId",
+        select: "name phoneNumber",
+        options: { strictPopulate: false },
+      })
       .sort("-createdAt");
 
     const metrics = {
@@ -236,11 +253,38 @@ exports.getEscrowDashboardData = async (req, res) => {
     };
 
     for (const order of orders) {
-      // Backfill missing PIN on any older orders so none show N/A in the Admin Vault
+      let needsSave = false;
+
+      // Ensure every order has a 6-digit PIN
       if (!order.deliveryPin) {
         order.deliveryPin = Math.floor(
           100000 + Math.random() * 900000,
         ).toString();
+        needsSave = true;
+      }
+
+      // Auto-heal orders that were paid on Paystack while verification was failing
+      if (order.paymentStatus === "pending_payment" && order.paymentReference) {
+        try {
+          const paystackTx = await verifyTransaction(order.paymentReference);
+          const txStatus = paystackTx?.data?.status || paystackTx?.status;
+          if (txStatus === "success") {
+            order.paymentStatus = "held_in_escrow";
+            order.deliveryStatus = "pending_dispatch";
+            needsSave = true;
+            if (order.listingId) {
+              await Listing.findByIdAndUpdate(
+                order.listingId._id || order.listingId,
+                { status: "in_escrow" },
+              );
+            }
+          }
+        } catch {
+          // Ignore if order was never paid on Paystack
+        }
+      }
+
+      if (needsSave) {
         await order.save();
       }
 
@@ -259,6 +303,7 @@ exports.getEscrowDashboardData = async (req, res) => {
       data: { orders, metrics },
     });
   } catch (error) {
+    console.error("Dashboard Data Error:", error);
     res
       .status(500)
       .json({ status: "error", message: "Failed to fetch vault data" });
@@ -295,7 +340,7 @@ exports.confirmDeliveryAndRelease = async (req, res) => {
     const orderId = req.params.orderId || req.params.id;
     const submittedPin = (req.body.deliveryPin || req.body.pin || "").trim();
 
-    const order = await Order.findById(orderId).populate("listingId");
+    const order = await Order.findById(orderId).populate(listingPopulateConfig);
     if (!order) {
       return res
         .status(404)
