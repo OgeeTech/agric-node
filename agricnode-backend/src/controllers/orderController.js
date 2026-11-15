@@ -6,11 +6,7 @@ const {
   initializeTransaction,
   verifyTransaction,
 } = require("../utils/paystack");
-// (If you use a different path or package for Paystack, just keep your existing import at the top)
 
-// ============================================================================
-// 1. BUYER CHECKOUT (Generates PIN & Redirects to /marketplace)
-// ============================================================================
 exports.initializeCheckout = async (req, res) => {
   try {
     const {
@@ -86,9 +82,6 @@ exports.initializeCheckout = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 2. VERIFY PAYMENT (Runs when buyer redirects back from Paystack)
-// ============================================================================
 exports.verifyPayment = async (req, res) => {
   try {
     const { reference } = req.params;
@@ -140,9 +133,6 @@ exports.verifyPayment = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 3. TRACK ORDER (Public Buyer Route)
-// ============================================================================
 exports.trackOrder = async (req, res) => {
   try {
     const { reference } = req.params;
@@ -165,9 +155,6 @@ exports.trackOrder = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 4. GET ALL ORDERS (Secured Admin Vault Route)
-// ============================================================================
 exports.getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
@@ -208,9 +195,6 @@ exports.getAllOrders = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 5. DISPATCH ORDER (Secured Admin Route - Marks Logistics In-Transit)
-// ============================================================================
 exports.dispatchOrder = async (req, res) => {
   try {
     const { id } = req.params;
@@ -233,9 +217,6 @@ exports.dispatchOrder = async (req, res) => {
   }
 };
 
-// ============================================================================
-// 6. CONFIRM DELIVERY & PAYOUT (Secured Admin Route - Escrow Release)
-// ============================================================================
 exports.confirmDelivery = async (req, res) => {
   try {
     const { id } = req.params;
@@ -273,12 +254,10 @@ exports.confirmDelivery = async (req, res) => {
     // NOTE: In a real system, you would trigger the Paystack Transfers API here
     // to instantly push the `order.farmerPayout` to the Farmer's registered Bank Account.
 
-    res
-      .status(200)
-      .json({
-        status: "success",
-        message: "Escrow funds released to farmer successfully!",
-      });
+    res.status(200).json({
+      status: "success",
+      message: "Escrow funds released to farmer successfully!",
+    });
   } catch (error) {
     res
       .status(500)
