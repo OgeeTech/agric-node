@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import {
   Sprout,
   Lock,
-  Phone,
   RefreshCw,
   MapPin,
   BadgeCheck,
@@ -26,6 +25,7 @@ interface CommentItem {
   text: string;
   createdAt: string;
 }
+
 interface Listing {
   _id: string;
   cropType: string;
@@ -39,6 +39,7 @@ interface Listing {
   comments?: CommentItem[];
   farmerId?: { name: string; phoneNumber: string };
 }
+
 interface Order {
   _id: string;
   amountPaid: number;
@@ -47,6 +48,7 @@ interface Order {
   paymentStatus: string;
   deliveryStatus: string;
   listingId?: {
+    _id?: string;
     cropType: string;
     quantity: number;
     areaCouncil: string;
@@ -85,11 +87,17 @@ export default function Marketplace() {
   const fetchListings = useCallback(async () => {
     setLoadingListings(true);
     try {
-      const res = await fetch(`${API_BASE}/listings`);
+      const res = await fetch(`${API_BASE}/listings`, { cache: "no-store" });
       const json = await res.json();
-      if (json.data) setListings(json.data);
+      if (json.data && Array.isArray(json.data)) {
+        // Only show crop lots that are still available for purchase
+        const availableLots = json.data.filter(
+          (item: Listing) => !item.status || item.status === "available",
+        );
+        setListings(availableLots);
+      }
     } catch (err) {
-      console.error(err);
+      console.error("Failed to fetch listings:", err);
     } finally {
       setLoadingListings(false);
     }
@@ -100,6 +108,7 @@ export default function Marketplace() {
     const reference = params.get("reference") || params.get("trxref");
     if (reference) {
       setActiveSubTab("tracker");
+      setTrackRefInput(reference);
       fetch(`${API_BASE}/orders/verify/${reference}`)
         .then((res) => res.json())
         .then((result) => {
@@ -112,6 +121,10 @@ export default function Marketplace() {
             document.title,
             window.location.pathname,
           );
+          fetchListings();
+        })
+        .catch((err) => {
+          console.error("Verification error:", err);
           fetchListings();
         });
     } else {
@@ -158,9 +171,13 @@ export default function Marketplace() {
         }),
       });
       const result = await res.json();
-      if (res.ok && result.data?.authorizationUrl)
-        window.location.href = result.data.authorizationUrl;
-      else alert(result.message);
+      const redirectUrl =
+        result.data?.authorizationUrl || result.data?.authorization_url;
+      if (res.ok && redirectUrl) {
+        window.location.href = redirectUrl;
+      } else {
+        alert(result.message || "Could not initialize checkout");
+      }
     } catch {
       alert("Network error");
     } finally {
@@ -206,7 +223,10 @@ export default function Marketplace() {
             </div>
           </Link>
           <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-white/95">
-            <Link href="/" className={`hover:text-white transition pb-1`}>
+            <Link
+              href="/"
+              className={`hover:text-white transition pb-1 ${pathname === "/" ? "border-b-2 border-white font-bold" : ""}`}
+            >
               How It Works
             </Link>
             <Link
@@ -228,7 +248,7 @@ export default function Marketplace() {
         </div>
       </header>
 
-      {/* MAIN CONTENT (Grows to push footer down) */}
+      {/* MAIN CONTENT */}
       <div className="flex-grow w-full">
         <div className="bg-[#43b05c] text-white">
           <div className="max-w-4xl mx-auto px-6 py-12 text-center">
@@ -244,7 +264,7 @@ export default function Marketplace() {
                 onClick={() => setActiveSubTab("market")}
                 className={`px-5 py-2 rounded-full text-sm font-bold ${activeSubTab === "market" ? "bg-white text-[#43b05c]" : "bg-white/20 hover:bg-white/30 transition"}`}
               >
-                Available Lots
+                Available Lots ({listings.length})
               </button>
               <button
                 onClick={() => setActiveSubTab("tracker")}
@@ -274,6 +294,9 @@ export default function Marketplace() {
                   <option value="Bwari">Bwari</option>
                   <option value="Gwagwalada">Gwagwalada</option>
                   <option value="Kuje">Kuje</option>
+                  <option value="AMAC">AMAC</option>
+                  <option value="Abaji">Abaji</option>
+                  <option value="Kwali">Kwali</option>
                 </select>
                 <button
                   onClick={fetchListings}
@@ -286,72 +309,146 @@ export default function Marketplace() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredListings.map((item) => (
-                <div
-                  key={item._id}
-                  className="bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col justify-between shadow-sm hover:border-[#43b05c] transition"
-                >
-                  <div>
-                    <div className="relative h-44 w-full bg-slate-100 flex items-center justify-center overflow-hidden">
-                      {item.imageUrl ? (
-                        <img
-                          src={item.imageUrl}
-                          alt={item.cropType}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <Sprout className="w-8 h-8 text-[#43b05c]/40" />
+            {filteredListings.length === 0 ? (
+              <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-12 text-center space-y-3">
+                <Sprout className="w-10 h-10 text-[#43b05c] mx-auto opacity-60" />
+                <h3 className="text-base font-bold text-slate-700">
+                  No Available Produce Lots
+                </h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  All listed lots in this area have been locked in escrow or
+                  sold. Dial <strong>*384*100#</strong> on the USSD simulator on
+                  the homepage to list a new harvest lot.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {filteredListings.map((item) => (
+                  <div
+                    key={item._id}
+                    className="bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col justify-between shadow-sm hover:border-[#43b05c] transition"
+                  >
+                    <div>
+                      <div className="relative h-44 w-full bg-slate-100 flex items-center justify-center overflow-hidden">
+                        {item.imageUrl ? (
+                          <img
+                            src={item.imageUrl}
+                            alt={item.cropType}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <Sprout className="w-8 h-8 text-[#43b05c]/40" />
+                        )}
+                        <span className="absolute top-3 right-3 text-xs bg-white/95 border px-2.5 py-1 rounded-full flex items-center gap-1 font-semibold">
+                          <MapPin className="w-3 h-3 text-[#43b05c]" />{" "}
+                          {item.areaCouncil}
+                        </span>
+                      </div>
+                      <div className="p-5">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <h3 className="text-lg font-bold">
+                            {item.quantity}kg {item.cropType}
+                          </h3>
+                          <span className="text-xl font-extrabold text-[#43b05c]">
+                            NGN {item.price.toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs text-slate-600 line-clamp-2">
+                          {item.description}
+                        </p>
+                        <div className="mt-4 pt-3 border-t text-xs text-slate-500 flex justify-between">
+                          <span>
+                            Seller:{" "}
+                            <strong>{item.farmerId?.name || "Farmer"}</strong>
+                          </span>
+                          <span className="text-[#43b05c] flex items-center gap-1 font-semibold">
+                            <BadgeCheck className="w-3.5 h-3.5" /> NIN Verified
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="px-5 pb-5 space-y-3">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setSelectedListing(item)}
+                          className="flex-1 bg-[#43b05c] text-white py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#389e50]"
+                        >
+                          <CreditCard className="w-4 h-4" /> Buy with Escrow
+                        </button>
+                        <button
+                          onClick={() =>
+                            setOpenCommentsId(
+                              openCommentsId === item._id ? null : item._id,
+                            )
+                          }
+                          className="px-3.5 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-200"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 text-[#43b05c]" />{" "}
+                          {item.comments?.length || 0}
+                        </button>
+                      </div>
+
+                      {openCommentsId === item._id && (
+                        <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
+                          <div className="max-h-32 overflow-y-auto space-y-1.5">
+                            {item.comments && item.comments.length > 0 ? (
+                              item.comments.map((c) => (
+                                <div
+                                  key={c._id}
+                                  className="bg-slate-50 p-2 rounded-lg"
+                                >
+                                  <span className="font-bold text-slate-800">
+                                    {c.authorName}:{" "}
+                                  </span>
+                                  <span className="text-slate-600">
+                                    {c.text}
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-slate-400 italic">
+                                No questions yet. Ask the farmer about harvest
+                                quality or logistics.
+                              </p>
+                            )}
+                          </div>
+                          <form
+                            onSubmit={(e) => handlePostComment(e, item._id)}
+                            className="space-y-1.5 pt-1"
+                          >
+                            <input
+                              type="text"
+                              placeholder="Your Name / Company"
+                              value={commentAuthor}
+                              onChange={(e) => setCommentAuthor(e.target.value)}
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                              required
+                            />
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Ask a question..."
+                                value={commentText}
+                                onChange={(e) => setCommentText(e.target.value)}
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                                required
+                              />
+                              <button
+                                type="submit"
+                                className="bg-[#43b05c] text-white px-3 py-1.5 rounded-lg font-bold flex items-center"
+                              >
+                                <Send className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </form>
+                        </div>
                       )}
-                      <span className="absolute top-3 right-3 text-xs bg-white/95 border px-2.5 py-1 rounded-full flex items-center gap-1 font-semibold">
-                        <MapPin className="w-3 h-3 text-[#43b05c]" />{" "}
-                        {item.areaCouncil}
-                      </span>
-                    </div>
-                    <div className="p-5">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <h3 className="text-lg font-bold">
-                          {item.quantity}kg {item.cropType}
-                        </h3>
-                        <span className="text-xl font-extrabold text-[#43b05c]">
-                          NGN {item.price.toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs text-slate-600 line-clamp-2">
-                        {item.description}
-                      </p>
-                      <div className="mt-4 pt-3 border-t text-xs text-slate-500 flex justify-between">
-                        <span>
-                          Seller: <strong>{item.farmerId?.name}</strong>
-                        </span>
-                        <span className="text-[#43b05c] flex items-center gap-1 font-semibold">
-                          <BadgeCheck className="w-3.5 h-3.5" /> NIN Verified
-                        </span>
-                      </div>
                     </div>
                   </div>
-                  <div className="px-5 pb-5 flex gap-2">
-                    <button
-                      onClick={() => setSelectedListing(item)}
-                      className="flex-1 bg-[#43b05c] text-white py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#389e50]"
-                    >
-                      <CreditCard className="w-4 h-4" /> Buy with Escrow
-                    </button>
-                    <button
-                      onClick={() =>
-                        setOpenCommentsId(
-                          openCommentsId === item._id ? null : item._id,
-                        )
-                      }
-                      className="px-3.5 py-2.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-200"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5 text-[#43b05c]" />{" "}
-                      {item.comments?.length || 0}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </main>
         )}
 
@@ -392,9 +489,9 @@ export default function Marketplace() {
                   <div className="flex items-center justify-between border-b pb-3">
                     <div>
                       <span className="text-sm font-bold block">
-                        {trackedOrder.listingId?.quantity}kg{" "}
-                        {trackedOrder.listingId?.cropType} (
-                        {trackedOrder.listingId?.areaCouncil})
+                        {trackedOrder.listingId?.quantity
+                          ? `${trackedOrder.listingId.quantity}kg ${trackedOrder.listingId.cropType || "Produce Lot"}`
+                          : "Escrow Produce Order"}
                       </span>
                       <span className="text-slate-500 font-mono">
                         {trackedOrder.paymentReference}
@@ -413,7 +510,8 @@ export default function Marketplace() {
                           6-Digit Delivery Release PIN
                         </span>
                         <span className="text-slate-500 text-[11px]">
-                          Provide this PIN to release funds to the farmer.
+                          Provide this PIN upon delivery to release funds to the
+                          farmer.
                         </span>
                       </div>
                       <span className="text-2xl font-mono font-extrabold text-[#43b05c]">
@@ -428,6 +526,61 @@ export default function Marketplace() {
         )}
       </div>
 
+      {/* BUYER PAYMENT CONFIRMED & 6-DIGIT DELIVERY PIN RECEIPT MODAL */}
+      {verifiedOrderReceipt && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h3 className="font-bold text-[#43b05c] flex items-center gap-2 text-sm">
+                <CheckCircle2 className="w-5 h-5" /> Escrow Payment Locked!
+              </h3>
+              <button
+                onClick={() => setVerifiedOrderReceipt(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-xs text-slate-600">
+              <p>
+                Your payment of{" "}
+                <strong className="text-slate-900">
+                  NGN {(verifiedOrderReceipt.amountPaid || 0).toLocaleString()}
+                </strong>{" "}
+                is now safely locked in <strong>AgriNode Escrow</strong>.
+              </p>
+              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-center space-y-1">
+                <span className="text-[11px] uppercase tracking-wider text-slate-500 block">
+                  Your 6-Digit Delivery Release PIN
+                </span>
+                <span className="text-3xl font-mono font-extrabold text-[#43b05c] tracking-widest block">
+                  {verifiedOrderReceipt.deliveryPin}
+                </span>
+                <span className="text-[11px] text-slate-500 block pt-1">
+                  Reference:{" "}
+                  <code className="text-slate-800 font-bold">
+                    {verifiedOrderReceipt.paymentReference}
+                  </code>
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 text-center">
+                Share this 6-digit PIN only after inspecting and accepting your
+                produce delivery.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setVerifiedOrderReceipt(null)}
+              className="mt-5 w-full bg-[#43b05c] hover:bg-[#389e50] text-white py-2.5 rounded-xl text-xs font-bold"
+            >
+              Got It, Saved My PIN
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* CHECKOUT MODAL */}
       {selectedListing && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -554,8 +707,7 @@ export default function Marketplace() {
         </div>
         <div className="max-w-7xl mx-auto px-6 pt-6 mt-8 border-t border-slate-800 text-[11px] flex flex-col md:flex-row justify-between items-center gap-4">
           <p>
-            &copy; 2026 AgriNode FCT. Built for the USPF
-            Changemaker Challenge.
+            &copy; 2026 AgriNode FCT. Built for the USPF Changemaker Challenge.
           </p>
           <div className="flex gap-4">
             <Link href="#" className="hover:text-white transition">
